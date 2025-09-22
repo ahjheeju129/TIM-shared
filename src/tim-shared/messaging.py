@@ -70,8 +70,8 @@ class MessageProducer:
             return
         
         # 필요한 모듈을 함수 내부에서 import하여 순환 참조 및 초기화 순서 문제 방지
-        from shared.config import get_config, Environment
-        from shared.exceptions import MessagingError
+        from .config import get_config, Environment
+        from .exceptions import MessagingError
 
         try:
             self.config = get_config()
@@ -126,7 +126,7 @@ class MessageProducer:
     def _init_sqs_client(self):
         """SQS 클라이언트 초기화 (LocalStack 지원)"""
         # 필요한 모듈을 이 시점에서 import
-        from shared.config import Environment
+        from .config import Environment
         
         try:
             client_kwargs = {
@@ -267,8 +267,8 @@ class MessageConsumer:
         if self._initialized:
             return
 
-        from shared.config import get_config, Environment
-        from shared.exceptions import MessagingError
+        from .config import get_config, Environment
+        from .exceptions import MessagingError
 
         try:
             # 설정 로드
@@ -313,7 +313,7 @@ class MessageConsumer:
     def _init_sqs_client(self):
         """SQS 클라이언트 초기화 (LocalStack 지원)"""
         # 필요한 모듈을 이 시점에서 import
-        from shared.config import Environment
+        from .config import Environment
         
         try:
             client_kwargs = {
@@ -351,7 +351,7 @@ class MessageConsumer:
         self._running = True
         logger.info("Starting message consumption", topics=self.topics)
         
-        from shared.exceptions import MessagingError
+        from .exceptions import MessagingError
 
         # Kafka 소비 우선
         if self.kafka_consumer:
@@ -390,12 +390,12 @@ class MessageConsumer:
                     
         except Exception as e:
             logger.error("Kafka consumption error", error=e, exc_info=True)
-            from shared.exceptions import MessagingError
+            from .exceptions import MessagingError
             raise MessagingError("Kafka consumption failed", system="kafka")
     
     async def _consume_sqs(self, message_handler: Callable):
         """SQS 메시지 소비"""
-        from shared.exceptions import MessagingError
+        from .exceptions import MessagingError
         if not self.config.messaging.sqs_queue_url:
             raise MessagingError("SQS queue URL not configured")
         

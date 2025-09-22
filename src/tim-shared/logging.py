@@ -90,7 +90,7 @@ class StructuredLogger:
         if self._configured:
             return
 
-        from shared.config import get_config, Environment
+        from .config import get_config, Environment
         config = get_config()
         
         level = getattr(logging, config.log_level.upper(), logging.INFO)
