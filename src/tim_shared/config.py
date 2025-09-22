@@ -18,7 +18,7 @@ class Environment(Enum):
 @dataclass
 class DatabaseConfig:
     """데이터베이스 설정"""
-    # MySQL 설정
+    # MySQL 설정 (환율 데이터용)
     mysql_host: str = "localhost"
     mysql_port: int = 3306
     mysql_database: str = "currency_db"
@@ -55,10 +55,7 @@ class MessagingConfig:
     # Kafka 설정
     kafka_bootstrap_servers: str
     kafka_security_protocol: str
-    
-    # SQS 설정
-    sqs_queue_urls: Dict[str, str] # 토픽 이름을 키로, 큐 URL을 값으로 저장
-    sqs_region: str = "ap-northeast-2"
+    kafka_topics: Dict[str, str]  # 토픽 이름을 키로, 토픽 이름을 값으로 저장
 
 
 @dataclass
@@ -83,7 +80,6 @@ class AppConfig:
     
     # 데이터베이스 설정
     sqs_endpoint: Optional[str] = None
-    dynamodb_endpoint: Optional[str] = None
     database: DatabaseConfig = None
     
     # 외부 API 설정
@@ -123,7 +119,6 @@ class ConfigManager:
             log_level=os.getenv("LOG_LEVEL", "DEBUG"),
 
             sqs_endpoint=os.getenv("SQS_ENDPOINT"),
-            dynamodb_endpoint=os.getenv("DYNAMODB_ENDPOINT"),
             
             database=DatabaseConfig(
                 # 로컬 MySQL (Docker Compose)
@@ -139,12 +134,15 @@ class ConfigManager:
                 redis_password=os.getenv("REDIS_PASSWORD", ""),
                 redis_ssl=False,
                 
-                # 로컬에서는 DynamoDB Local 사용
-                # LocalStack 초기화 스크립트(01-create-aws-resources.sh)는 ap-northeast-2 리전을 사용하므로
-                # 여기서도 동일한 리전을 사용하도록 ENV(AWS_REGION)과 일치시킵니다.
-                dynamodb_region=os.getenv("AWS_REGION", "ap-northeast-2"),
-                selections_table="travel_destination_selections",
-                rankings_table="RankingResults"
+                # MongoDB 설정 (여행지 선택 및 랭킹 데이터용)
+                mongodb_host=os.getenv("MONGODB_HOST", "localhost"),
+                mongodb_port=int(os.getenv("MONGODB_PORT", "27017")),
+                mongodb_database=os.getenv("MONGODB_DATABASE", "ranking_db"),
+                mongodb_username=os.getenv("MONGODB_USERNAME", "ranking_user"),
+                mongodb_password=os.getenv("MONGODB_PASSWORD", ""),
+                mongodb_auth_source=os.getenv("MONGODB_AUTH_SOURCE", "admin"),
+                selections_collection=os.getenv("SELECTIONS_COLLECTION", "travel_destination_selections"),
+                rankings_collection=os.getenv("RANKINGS_COLLECTION", "ranking_results")
             ),
             
             external_apis=ExternalAPIConfig(
@@ -156,13 +154,11 @@ class ConfigManager:
             messaging=MessagingConfig(
                 kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
                 kafka_security_protocol="PLAINTEXT",
-                sqs_region=os.getenv("AWS_REGION", "ap-northeast-2"),
-                # --- [핵심 수정: 여러 큐 URL 환경 변수를 읽어 딕셔너리로 만듦] ---
-                sqs_queue_urls={
-                    "exchange-rates": os.getenv("SQS_EXCHANGE_RATES_QUEUE_URL", ""),
-                    "user-events": os.getenv("SQS_USER_EVENTS_QUEUE_URL", ""),
-                    "ranking-events": os.getenv("SQS_RANKING_EVENTS_QUEUE_URL", ""),
-                    "dlq": os.getenv("SQS_DLQ_URL", "")
+                kafka_topics={
+                    "exchange-rates": os.getenv("KAFKA_EXCHANGE_RATES_TOPIC", "exchange-rates"),
+                    "user-events": os.getenv("KAFKA_USER_EVENTS_TOPIC", "user-events"),
+                    "ranking-events": os.getenv("KAFKA_RANKING_EVENTS_TOPIC", "ranking-events"),
+                    "dlq": os.getenv("KAFKA_DLQ_TOPIC", "dlq")
                 }
             ),
             
@@ -193,10 +189,16 @@ class ConfigManager:
                 redis_port=int(os.getenv("REDIS_PORT", "6379")),
                 redis_ssl=True,  # AWS에서는 SSL 사용
                 
-                # DynamoDB 설정
-                dynamodb_region=os.getenv("DYNAMODB_REGION", os.getenv("AWS_REGION", "ap-northeast-2")),
-                selections_table=os.getenv("SELECTIONS_TABLE", "travel_destination_selections"),
-                rankings_table=os.getenv("RANKINGS_TABLE", "RankingResults")
+                # MongoDB 설정 (여행지 선택 및 랭킹 데이터용)
+                mongodb_host=os.getenv("MONGODB_ENDPOINT", ""),
+                mongodb_port=int(os.getenv("MONGODB_PORT", "27017")),
+                mongodb_database=os.getenv("MONGODB_DATABASE", "ranking_db"),
+                mongodb_username=os.getenv("MONGODB_USERNAME", "ranking_user"),
+                # TODO: Parameter Store에서 로드
+                mongodb_password=os.getenv("MONGODB_PASSWORD", ""),
+                mongodb_auth_source=os.getenv("MONGODB_AUTH_SOURCE", "admin"),
+                selections_collection=os.getenv("SELECTIONS_COLLECTION", "travel_destination_selections"),
+                rankings_collection=os.getenv("RANKINGS_COLLECTION", "ranking_results")
             ),
             
             external_apis=ExternalAPIConfig(
@@ -210,10 +212,12 @@ class ConfigManager:
                 # MSK 설정
                 kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", ""),
                 kafka_security_protocol="SSL",
-                
-                # SQS 설정
-                sqs_queue_url=os.getenv("SQS_QUEUE_URL", ""),
-                sqs_region=os.getenv("AWS_REGION", "ap-northeast-2")
+                kafka_topics={
+                    "exchange-rates": os.getenv("KAFKA_EXCHANGE_RATES_TOPIC", "exchange-rates"),
+                    "user-events": os.getenv("KAFKA_USER_EVENTS_TOPIC", "user-events"),
+                    "ranking-events": os.getenv("KAFKA_RANKING_EVENTS_TOPIC", "ranking-events"),
+                    "dlq": os.getenv("KAFKA_DLQ_TOPIC", "dlq")
+                }
             )
         )
     

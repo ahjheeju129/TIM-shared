@@ -198,7 +198,7 @@ class SelectionRecord(BaseModel):
     user_agent_hash: Optional[str] = None
     referrer: Optional[str] = None
     created_at: datetime
-    ttl: int  # DynamoDB TTL
+    ttl: int  # MongoDB TTL (Time To Live)
     
     class Config:
         json_encoders = {

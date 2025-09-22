@@ -1,6 +1,6 @@
 """
 데이터베이스 연결 및 관리 모듈
-Aurora MySQL, Redis, DynamoDB 지원
+Aurora MySQL, Redis, MongoDB 지원
 """
 import asyncio
 import json
@@ -43,18 +43,18 @@ class DatabaseManager:
     """데이터베이스 연결 관리자"""
     
     # TODO: AWS 연결을 위한 수정 필요
-    # - LocalStack endpoint_url 제거 (로컬 개발용)
-    # - 실제 AWS region_name 설정 (e.g., 'ap-northeast-2')
-    # - IAM 역할에 DynamoDB, RDS, ElastiCache 접근 권한 추가
+    # - IAM 역할에 RDS, ElastiCache, DocumentDB 접근 권한 추가
     # - Parameter Store에서 DB 비밀번호 로드 활성화 (주석 해제)
-    # - VPC 보안 그룹에서 포트 허용 (3306: MySQL, 6379: Redis)
+    # - VPC 보안 그룹에서 포트 허용 (3306: MySQL, 6379: Redis, 27017: MongoDB)
     
     def __init__(self):
         self.config = get_config()
         self._mysql_pool = None
         self._redis_client = None
-        self._dynamodb_resource = None
-        self._dynamodb_client = None
+        self._mongodb_client = None
+        self._mongodb_database = None
+        self._selections_collection = None
+        self._rankings_collection = None
     
     async def initialize(self):
         """데이터베이스 연결 초기화"""
@@ -77,7 +77,7 @@ class DatabaseManager:
         try:
             await self._init_mongodb()
         except Exception as e:
-            get_logger_safe().warning("DynamoDB initialization failed, continuing without DynamoDB")
+            get_logger_safe().warning("MongoDB initialization failed, continuing without MongoDB")
         
         get_logger_safe().info("Database connections initialized (some may be unavailable)")
     
@@ -215,75 +215,6 @@ class DatabaseManager:
             logger.error("Failed to initialize MongoDB connection", error=e)
             raise
     
-    def _init_dynamodb(self):
-        """DynamoDB 초기화 (AWS)"""
-        # TODO: 실시간 서비스 변경 - DynamoDB로 사용자 선택 기록 및 랭킹 저장
-        # - 로컬 mock 대신 실제 DynamoDB 테이블 사용
-        # - travel_destination_selections 테이블: selection_date (PK), selection_timestamp_userid (SK)
-        # - RankingResults 테이블: period (PK)
-        # AWS 배포 시 수정 필요사항:
-        # 1. DynamoDB 테이블 생성 (travel_destination_selections, RankingResults)
-        # 2. GSI(Global Secondary Index) 설정
-        # 3. Auto Scaling 설정 (필요시)
-        # 4. Point-in-time Recovery 활성화
-        # 5. IAM 역할에 DynamoDB 권한 추가
-        try:
-            db_config = self.config.database
-            
-            # DynamoDB 리소스 및 클라이언트 생성
-            self._dynamodb_resource = boto3.resource(
-                'dynamodb',
-                region_name=db_config.dynamodb_region
-            )
-            
-            self._dynamodb_client = boto3.client(
-                'dynamodb',
-                region_name=db_config.dynamodb_region
-            )
-            
-            logger.info(
-                "DynamoDB connection established",
-                region=db_config.dynamodb_region
-            )
-            
-        except Exception as e:
-            logger.error("Failed to initialize DynamoDB connection", error=e)
-            raise
-    
-    def _init_dynamodb_local(self):
-        """DynamoDB Local 초기화 (LocalStack 사용)"""
-        # TODO: 실시간 서비스 변경 - LocalStack mock 대신 실제 DynamoDB 사용
-        # - endpoint_url 제거
-        # - region_name = 'ap-northeast-2' 등 실제 리전 설정
-        # - AWS 자격증명 설정 (IAM 역할)
-        try:
-            # 컨테이너 내부에서는 localhost가 아닌 서비스 이름(localstack)으로 접근해야 함
-            endpoint = self.config.dynamodb_endpoint or 'http://localstack:4566'
-            region = self.config.database.dynamodb_region or 'us-east-1'
-
-            # LocalStack DynamoDB 연결 (4566 포트)
-            self._dynamodb_resource = boto3.resource(
-                'dynamodb',
-                endpoint_url=endpoint,
-                region_name=region,
-                aws_access_key_id='dummy',
-                aws_secret_access_key='dummy'
-            )
-
-            self._dynamodb_client = boto3.client(
-                'dynamodb',
-                endpoint_url=endpoint,
-                region_name=region,
-                aws_access_key_id='dummy',
-                aws_secret_access_key='dummy'
-            )
-
-            logger.info("DynamoDB Local (LocalStack) connection established")
-
-        except Exception as e:
-            logger.error("Failed to initialize DynamoDB Local connection", error=e)
-            # 로컬에서는 DynamoDB 없이도 동작하도록 허용
-            logger.warning("Continuing without DynamoDB Local")
     
     async def _get_parameter_store_value(self, parameter_name: str) -> str:
         """AWS Parameter Store에서 값 조회"""
@@ -315,17 +246,17 @@ class DatabaseManager:
             raise RuntimeError("Redis client not initialized")
         return self._redis_client
     
-    def get_dynamodb_table(self, table_name: str):
-        """DynamoDB 테이블 리소스 반환"""
-        if not self._dynamodb_resource:
-            raise RuntimeError("DynamoDB resource not initialized")
-        return self._dynamodb_resource.Table(table_name)
+    def get_mongodb_collection(self, collection_name: str):
+        """MongoDB 컬렉션 반환"""
+        if not self._mongodb_database:
+            raise RuntimeError("MongoDB database not initialized")
+        return self._mongodb_database[collection_name]
     
-    def get_dynamodb_client(self):
-        """DynamoDB 클라이언트 반환"""
-        if not self._dynamodb_client:
-            raise RuntimeError("DynamoDB client not initialized")
-        return self._dynamodb_client
+    def get_mongodb_client(self):
+        """MongoDB 클라이언트 반환"""
+        if not self._mongodb_client:
+            raise RuntimeError("MongoDB client not initialized")
+        return self._mongodb_client
     
     async def close(self):
         """모든 연결 종료"""
@@ -337,6 +268,9 @@ class DatabaseManager:
         
         if self._redis_client:
             await self._redis_client.close()
+        
+        if self._mongodb_client:
+            self._mongodb_client.close()
         
         logger.info("Database connections closed")
 
@@ -370,9 +304,9 @@ def get_redis_client():
     return get_db_manager().get_redis_client()
 
 
-def get_dynamodb_table(table_name: str):
-    """DynamoDB 테이블 반환"""
-    return get_db_manager().get_dynamodb_table(table_name)
+def get_mongodb_collection(collection_name: str):
+    """MongoDB 컬렉션 반환"""
+    return get_db_manager().get_mongodb_collection(collection_name)
 
 
 # 데이터베이스 헬퍼 클래스들
@@ -523,73 +457,82 @@ class MySQLHelper:
                 return cursor.rowcount
 
 
-class DynamoDBHelper:
-    """DynamoDB 작업 헬퍼"""
+class MongoDBHelper:
+    """MongoDB 작업 헬퍼"""
     
-    def __init__(self, table_name: str):
-        self.table = get_dynamodb_table(table_name)
-        self.table_name = table_name
-
-    def _to_dynamodb_compatible(self, value: Any) -> Any:
-        """DynamoDB에 저장 가능한 형태로 변환 (float -> Decimal 등)"""
-        if isinstance(value, float):
-            # 부동소수는 문자열을 통해 Decimal로 변환하여 정확도 유지
-            return Decimal(str(value))
-        if isinstance(value, dict):
-            return {k: self._to_dynamodb_compatible(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [self._to_dynamodb_compatible(v) for v in value]
-        return value
+    def __init__(self, collection_name: str):
+        self.collection = get_mongodb_collection(collection_name)
+        self.collection_name = collection_name
     
-    async def put_item(self, item: Dict[str, Any]):
-        """아이템 저장"""
+    async def insert_one(self, document: Dict[str, Any]) -> str:
+        """문서 하나 삽입"""
         try:
-            # DynamoDB는 동기 작업이므로 스레드 풀에서 실행
-            loop = asyncio.get_event_loop()
-            # kwargs로 전달되도록 람다 사용 (boto3는 키워드 인수 필요)
-            converted = self._to_dynamodb_compatible(item)
-            await loop.run_in_executor(None, lambda: self.table.put_item(Item=converted))
-        except ClientError as e:
-            logger.error(f"Failed to put item to {self.table_name}", error=e)
+            result = await self.collection.insert_one(document)
+            return str(result.inserted_id)
+        except Exception as e:
+            logger.error(f"Failed to insert document to {self.collection_name}", error=e)
             raise
     
-    async def get_item(self, key: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """아이템 조회"""
+    async def insert_many(self, documents: List[Dict[str, Any]]) -> List[str]:
+        """문서 여러 개 삽입"""
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, lambda: self.table.get_item(Key=key)
-            )
-            return response.get('Item')
-        except ClientError as e:
-            logger.error(f"Failed to get item from {self.table_name}: {e}")
+            result = await self.collection.insert_many(documents)
+            return [str(id) for id in result.inserted_ids]
+        except Exception as e:
+            logger.error(f"Failed to insert documents to {self.collection_name}", error=e)
             raise
     
-    async def query(self, key_condition_expression, **kwargs) -> List[Dict[str, Any]]:
-        """쿼리 실행"""
+    async def find_one(self, filter_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """문서 하나 조회"""
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, 
-                lambda: self.table.query(
-                    KeyConditionExpression=key_condition_expression,
-                    **kwargs
-                )
-            )
-            return response.get('Items', [])
-        except ClientError as e:
-            logger.error(f"Failed to query {self.table_name}", error=e)
+            return await self.collection.find_one(filter_dict)
+        except Exception as e:
+            logger.error(f"Failed to find document in {self.collection_name}", error=e)
             raise
-
-    async def scan(self, **kwargs) -> List[Dict[str, Any]]:
-        """테이블 스캔"""
+    
+    async def find_many(self, filter_dict: Dict[str, Any] = None, limit: int = None) -> List[Dict[str, Any]]:
+        """문서 여러 개 조회"""
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.table.scan(**kwargs)
-            )
-            return response.get('Items', [])
-        except ClientError as e:
-            logger.error(f"Failed to scan {self.table_name}", error=e)
+            cursor = self.collection.find(filter_dict or {})
+            if limit:
+                cursor = cursor.limit(limit)
+            return await cursor.to_list(length=limit)
+        except Exception as e:
+            logger.error(f"Failed to find documents in {self.collection_name}", error=e)
+            raise
+    
+    async def update_one(self, filter_dict: Dict[str, Any], update_dict: Dict[str, Any]) -> int:
+        """문서 하나 업데이트"""
+        try:
+            result = await self.collection.update_one(filter_dict, {"$set": update_dict})
+            return result.modified_count
+        except Exception as e:
+            logger.error(f"Failed to update document in {self.collection_name}", error=e)
+            raise
+    
+    async def update_many(self, filter_dict: Dict[str, Any], update_dict: Dict[str, Any]) -> int:
+        """문서 여러 개 업데이트"""
+        try:
+            result = await self.collection.update_many(filter_dict, {"$set": update_dict})
+            return result.modified_count
+        except Exception as e:
+            logger.error(f"Failed to update documents in {self.collection_name}", error=e)
+            raise
+    
+    async def delete_one(self, filter_dict: Dict[str, Any]) -> int:
+        """문서 하나 삭제"""
+        try:
+            result = await self.collection.delete_one(filter_dict)
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"Failed to delete document from {self.collection_name}", error=e)
+            raise
+    
+    async def delete_many(self, filter_dict: Dict[str, Any]) -> int:
+        """문서 여러 개 삭제"""
+        try:
+            result = await self.collection.delete_many(filter_dict)
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"Failed to delete documents from {self.collection_name}", error=e)
             raise

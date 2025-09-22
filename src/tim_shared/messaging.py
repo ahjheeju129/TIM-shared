@@ -1,6 +1,6 @@
 """
 메시징 시스템 관리 모듈
-Kafka와 SQS를 지원하는 통합 메시징 인터페이스
+Kafka를 사용하는 메시징 인터페이스
 """
 import json
 import asyncio
@@ -37,32 +37,23 @@ except ImportError as e:
     KAFKA_AVAILABLE = False
     logger.warning("aiokafka not available, Kafka functionality disabled", error=str(e))
 
-try:
-    import boto3
-    from botocore.exceptions import ClientError
-    SQS_AVAILABLE = True
-except ImportError:
-    SQS_AVAILABLE = False
-    logger.warning("boto3 not available, SQS functionality disabled")
+# SQS 관련 import 제거
 
 
 class MessageProducer:
-    """메시지 프로듀서 (Kafka 우선, SQS 폴백)"""
+    """메시지 프로듀서 (Kafka 전용)"""
     
     # TODO: AWS 연결을 위한 수정 필요
-    # - LocalStack 대신 실제 MSK (Kafka) 클러스터 엔드포인트 사용 (bootstrap_servers)
+    # - 실제 MSK (Kafka) 클러스터 엔드포인트 사용 (bootstrap_servers)
     # - IAM 또는 SASL/SCRAM 인증 설정 (security_protocol='SASL_SSL', sasl_mechanism='AWS_MSK_IAM')
-    # - SQS 큐 URL 실제 설정 (sqs_queue_url)
     # - VPC 보안 그룹에서 MSK 포트 허용 (9092 PLAINTEXT, 9094 TLS, 9096 SASL_SSL)
-    # - IAM 역할에 kafka-cluster:Connect, kafka-cluster:WriteData, sqs:SendMessage 권한 추가
+    # - IAM 역할에 kafka-cluster:Connect, kafka-cluster:WriteData 권한 추가
     # 실시간 서비스 변경: data-ingestor에서 실제 메시지 스트리밍으로 환율 데이터 실시간 처리
     
     def __init__(self):
         self.config = None  # 초기화 시점에서 로드
         self.kafka_producer = None
-        self.sqs_client = None
         self._initialized = False
-        self.use_kafka = False # Kafka 사용 여부를 인스턴스 변수로 관리
     
     async def initialize(self):
         """프로듀서 초기화"""
@@ -76,25 +67,23 @@ class MessageProducer:
         try:
             self.config = get_config()
             
-            # --- [핵심 수정] Kafka 사용 가능 여부를 이 시점에서 최종 결정하고 로그 기록 ---
-            self.use_kafka = KAFKA_AVAILABLE and self.config.environment != Environment.LOCAL
-            
-            if self.use_kafka:
+            # Kafka만 사용
+            if KAFKA_AVAILABLE:
                 logger.info(f"Kafka is enabled for '{self.config.environment.value}' environment.")
                 if self.config.messaging.kafka_bootstrap_servers:
                     await self._init_kafka_producer()
+                else:
+                    logger.warning("Kafka bootstrap servers not configured")
             else:
-                logger.info("Kafka is disabled for this environment. SQS will be used as a fallback if available.")
-            
-            if SQS_AVAILABLE: # SQS는 LocalStack을 통해 로컬에서도 사용 가능할 수 있음
-                self._init_sqs_client()
+                logger.error("Kafka is not available. Please install aiokafka.")
+                raise MessagingError("Kafka not available", system="kafka")
             
             self._initialized = True
             logger.info("Message producer initialized successfully")
             
         except Exception as e:
             logger.error("Failed to initialize message producer", error=e, exc_info=True)
-            raise MessagingError("Producer initialization failed", system="kafka_sqs")
+            raise MessagingError("Producer initialization failed", system="kafka")
     
     
     async def _init_kafka_producer(self):
@@ -123,33 +112,6 @@ class MessageProducer:
             logger.warning("Failed to initialize Kafka producer. It will be disabled.", error=str(e))
             self.kafka_producer = None # 초기화 실패 시 None으로 설정
     
-    def _init_sqs_client(self):
-        """SQS 클라이언트 초기화 (LocalStack 지원)"""
-        # 필요한 모듈을 이 시점에서 import
-        from .config import Environment
-        
-        try:
-            client_kwargs = {
-                'region_name': self.config.messaging.sqs_region
-            }
-            
-            # --- [핵심 수정] ---
-            # 로컬 환경일 경우 LocalStack 엔드포인트를 사용하도록 설정
-            if self.config.environment == Environment.LOCAL:
-                # docker-compose.yml에 정의된 SQS_ENDPOINT 환경변수 값을 사용
-                # config.py에서 이 값을 self.config.sqs_endpoint 등으로 로드해야 합니다.
-                # 이전 docker-compose.yml을 보면 DYNAMODB_ENDPOINT와 SQS_ENDPOINT가 동일합니다.
-                endpoint_url = getattr(self.config, 'sqs_endpoint', None) or getattr(self.config, 'dynamodb_endpoint', None)
-                if endpoint_url:
-                    client_kwargs['endpoint_url'] = endpoint_url
-            # --- [수정 끝] ---
-            
-            self.sqs_client = boto3.client('sqs', **client_kwargs)
-            logger.info("SQS client initialized", extra=client_kwargs)
-
-        except Exception as e:
-            logger.warning("Failed to initialize SQS client. It will be disabled.", error=str(e))
-            self.sqs_client = None
     
     async def send_message(
         self, 
@@ -181,65 +143,33 @@ class MessageProducer:
             'producer_service': self.config.service_name
         }
         
-        # Kafka 전송 시도
-        if self.kafka_producer:
-            try:
-                await self.kafka_producer.send_and_wait(
-                    topic=topic,
-                    value=enriched_message,
-                    key=key,
-                    partition=partition
-                )
-                
-                logger.debug(
-                    "Message sent to Kafka",
-                    topic=topic,
-                    key=key,
-                    message_id=enriched_message['message_id']
-                )
-                return True
-                
-            except Exception as e:
-                logger.warning("Kafka send failed, trying SQS fallback", error=e, exc_info=True)
-        
-        # SQS 폴백
-        queue_url = self.config.messaging.sqs_queue_urls.get(topic)
-        if self.sqs_client and queue_url:
-            try:
-                response = self.sqs_client.send_message(
-                    QueueUrl=queue_url,
-                    MessageBody=json.dumps(enriched_message, default=str),
-                    MessageAttributes={
-                        'topic': {
-                            'StringValue': topic,
-                            'DataType': 'String'
-                        },
-                        'producer_service': {
-                            'StringValue': self.config.service_name,
-                            'DataType': 'String'
-                        }
-                    }
-                )
-                
-                logger.debug(
-                    "Message sent to SQS",
-                    queue_url=queue_url,
-                    message_id=response['MessageId']
-                )
-                return True
-                
-            except Exception as e:
-                logger.error("SQS send also failed", error=e, exc_info=True)
-        
-        # 모든 전송 방법 실패
-        logger.error("All messaging systems failed to send the message", topic=topic)
-        # from .exceptions import MessagingError # 필요 시점에 임포트
-        # raise MessagingError(
-        #     f"Failed to send message to topic {topic}",
-        #     system="kafka_sqs",
-        #     topic=topic
-        # )
-        return False # 실패 시 False 반환으로 변경하여 유연성 확보
+        # Kafka 전송
+        if not self.kafka_producer:
+            logger.error("Kafka producer not initialized")
+            return False
+            
+        try:
+            # 토픽 이름을 설정에서 가져오기
+            topic_name = self.config.messaging.kafka_topics.get(topic, topic)
+            
+            await self.kafka_producer.send_and_wait(
+                topic=topic_name,
+                value=enriched_message,
+                key=key,
+                partition=partition
+            )
+            
+            logger.debug(
+                "Message sent to Kafka",
+                topic=topic_name,
+                key=key,
+                message_id=enriched_message['message_id']
+            )
+            return True
+            
+        except Exception as e:
+            logger.error("Kafka send failed", error=e, exc_info=True)
+            return False
     
     async def close(self):
         """프로듀서 종료"""
@@ -258,7 +188,6 @@ class MessageConsumer:
         self.topics = topics
         self.group_id = group_id
         self.kafka_consumer = None
-        self.sqs_client = None
         self._running = False
         self._initialized = False # 초기화 상태 플래그 추가
 
@@ -277,17 +206,16 @@ class MessageConsumer:
             # Kafka 컨슈머 초기화
             if KAFKA_AVAILABLE and self.config.messaging.kafka_bootstrap_servers:
                 await self._init_kafka_consumer()
-            
-            # SQS 클라이언트 초기화 (AWS 환경에서만)
-            if SQS_AVAILABLE and self.config.environment != Environment.LOCAL:
-                self._init_sqs_client()
+            else:
+                logger.error("Kafka is not available or not configured")
+                raise MessagingError("Kafka not available", system="kafka")
 
             self._initialized = True
             logger.info("Message consumer initialized successfully")
             
         except Exception as e:
             logger.error("Failed to initialize message consumer", error=e, exc_info=True)
-            raise MessagingError("Consumer initialization failed", system="kafka_sqs")
+            raise MessagingError("Consumer initialization failed", system="kafka")
     
     async def _init_kafka_consumer(self):
         """Kafka 컨슈머 초기화"""
@@ -310,33 +238,6 @@ class MessageConsumer:
             logger.warning("Failed to initialize Kafka consumer", error=str(e))
             self.kafka_consumer = None
     
-    def _init_sqs_client(self):
-        """SQS 클라이언트 초기화 (LocalStack 지원)"""
-        # 필요한 모듈을 이 시점에서 import
-        from .config import Environment
-        
-        try:
-            client_kwargs = {
-                'region_name': self.config.messaging.sqs_region
-            }
-            
-            # --- [핵심 수정] ---
-            # 로컬 환경일 경우 LocalStack 엔드포인트를 사용하도록 설정
-            if self.config.environment == Environment.LOCAL:
-                # docker-compose.yml에 정의된 SQS_ENDPOINT 환경변수 값을 사용
-                # config.py에서 이 값을 self.config.sqs_endpoint 등으로 로드해야 합니다.
-                # 이전 docker-compose.yml을 보면 DYNAMODB_ENDPOINT와 SQS_ENDPOINT가 동일합니다.
-                endpoint_url = getattr(self.config, 'sqs_endpoint', None) or getattr(self.config, 'dynamodb_endpoint', None)
-                if endpoint_url:
-                    client_kwargs['endpoint_url'] = endpoint_url
-            # --- [수정 끝] ---
-            
-            self.sqs_client = boto3.client('sqs', **client_kwargs)
-            logger.info("SQS client initialized", extra=client_kwargs)
-
-        except Exception as e:
-            logger.warning("Failed to initialize SQS client. It will be disabled.", error=str(e))
-            self.sqs_client = None
     
     async def start_consuming(self, message_handler: Callable[[Dict[str, Any]], None]):
         """
