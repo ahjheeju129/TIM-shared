@@ -24,4 +24,5 @@ dependencies = [
 package-dir={""="src"}
 
 [tool.setuptools.packages.find]
-whrer=["src"]
+where=["src"]
+include=["tim-shared*"]
