@@ -79,7 +79,6 @@ class AppConfig:
     rate_limit_per_minute: int = 100
     
     # 데이터베이스 설정
-    sqs_endpoint: Optional[str] = None
     database: DatabaseConfig = None
     
     # 외부 API 설정
@@ -104,14 +103,6 @@ class ConfigManager:
         return self._config
     
     def _load_config(self) -> AppConfig:
-        """환경에 따른 설정 로드"""
-        if self.environment == Environment.LOCAL:
-            return self._load_local_config()
-        else:
-            return self._load_aws_config()
-    
-    def _load_local_config(self) -> AppConfig:
-        """로컬 개발 환경 설정"""
         return AppConfig(
             environment=Environment.LOCAL,
             service_name=self.service_name,
@@ -122,11 +113,11 @@ class ConfigManager:
             
             database=DatabaseConfig(
                 # 로컬 MySQL (Docker Compose)
-                aurora_host=os.getenv("DB_HOST", "localhost"),
-                aurora_port=int(os.getenv("DB_PORT", "3306")),
-                aurora_database=os.getenv("DB_NAME", "currency_db"),
-                aurora_username=os.getenv("DB_USER", "currency_user"),  # Docker Compose와 일치
-                aurora_password=os.getenv("DB_PASSWORD", "password"),
+                mysql_host=os.getenv("DB_HOST", "localhost"),
+                mysql_port=int(os.getenv("DB_PORT", "3306")),
+                mysql_database=os.getenv("DB_NAME", "currency_db"),
+                mysql_username=os.getenv("DB_USER", "currency_user"),  # Docker Compose와 일치
+                mysql_password=os.getenv("DB_PASSWORD", "password"),
                 
                 # 로컬 Redis (Docker Compose)
                 redis_host=os.getenv("REDIS_HOST", "localhost"),
@@ -146,9 +137,7 @@ class ConfigManager:
             ),
             
             external_apis=ExternalAPIConfig(
-                bok_api_key=os.getenv("BOK_API_KEY", ""),
-                fed_api_key=os.getenv("FED_API_KEY", ""),
-                backup_api_key=os.getenv("BACKUP_API_KEY", "")
+                bok_api_key=os.getenv("BOK_API_KEY", "")
             ),
             
             messaging=MessagingConfig(
@@ -165,82 +154,6 @@ class ConfigManager:
             cors_origins=["http://localhost:3000", "http://localhost:8000"]
         )
     
-    def _load_aws_config(self) -> AppConfig:
-        """AWS 환경 설정 (Parameter Store 사용)"""
-        # TODO: AWS Parameter Store에서 설정 로드
-        # 현재는 환경 변수로 대체
-        return AppConfig(
-            environment=self.environment,
-            service_name=self.service_name,
-            service_version=os.getenv("SERVICE_VERSION", "1.0.0"),
-            log_level=os.getenv("LOG_LEVEL", "INFO"),
-            
-            database=DatabaseConfig(
-                # Aurora 설정
-                aurora_host=os.getenv("AURORA_ENDPOINT", ""),
-                aurora_port=int(os.getenv("AURORA_PORT", "3306")),
-                aurora_database=os.getenv("AURORA_DATABASE", "currency_db"),
-                aurora_username=os.getenv("AURORA_USERNAME", "currency_user"),
-                # TODO: Parameter Store에서 로드
-                aurora_password=os.getenv("AURORA_PASSWORD", ""),
-                
-                # ElastiCache Redis 설정
-                redis_host=os.getenv("REDIS_ENDPOINT", ""),
-                redis_port=int(os.getenv("REDIS_PORT", "6379")),
-                redis_ssl=True,  # AWS에서는 SSL 사용
-                
-                # MongoDB 설정 (여행지 선택 및 랭킹 데이터용)
-                mongodb_host=os.getenv("MONGODB_ENDPOINT", ""),
-                mongodb_port=int(os.getenv("MONGODB_PORT", "27017")),
-                mongodb_database=os.getenv("MONGODB_DATABASE", "ranking_db"),
-                mongodb_username=os.getenv("MONGODB_USERNAME", "ranking_user"),
-                # TODO: Parameter Store에서 로드
-                mongodb_password=os.getenv("MONGODB_PASSWORD", ""),
-                mongodb_auth_source=os.getenv("MONGODB_AUTH_SOURCE", "admin"),
-                selections_collection=os.getenv("SELECTIONS_COLLECTION", "travel_destination_selections"),
-                rankings_collection=os.getenv("RANKINGS_COLLECTION", "ranking_results")
-            ),
-            
-            external_apis=ExternalAPIConfig(
-                # TODO: Parameter Store에서 로드
-                bok_api_key=os.getenv("BOK_API_KEY", ""),
-                fed_api_key=os.getenv("FED_API_KEY", ""),
-                backup_api_key=os.getenv("BACKUP_API_KEY", "")
-            ),
-            
-            messaging=MessagingConfig(
-                # MSK 설정
-                kafka_bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", ""),
-                kafka_security_protocol="SSL",
-                kafka_topics={
-                    "exchange-rates": os.getenv("KAFKA_EXCHANGE_RATES_TOPIC", "exchange-rates"),
-                    "user-events": os.getenv("KAFKA_USER_EVENTS_TOPIC", "user-events"),
-                    "ranking-events": os.getenv("KAFKA_RANKING_EVENTS_TOPIC", "ranking-events"),
-                    "dlq": os.getenv("KAFKA_DLQ_TOPIC", "dlq")
-                }
-            )
-        )
-    
-    def _load_from_parameter_store(self, parameter_name: str) -> str:
-        """AWS Parameter Store에서 값 로드"""
-        # AWS 배포 시 수정 필요사항:
-        # 1. IAM 역할에 ssm:GetParameter 권한 추가
-        # 2. Parameter Store에 비밀번호 등 민감 정보 저장
-        # 3. 아래 주석 해제
-        
-        # import boto3
-        # try:
-        #     ssm = boto3.client('ssm')
-        #     response = ssm.get_parameter(Name=parameter_name, WithDecryption=True)
-        #     return response['Parameter']['Value']
-        # except Exception as e:
-        #     logger.error(f"Failed to get parameter {parameter_name}", error=e)
-        #     # 폴백으로 환경변수 사용
-        #     return os.getenv(parameter_name.replace('/', '_').upper(), "")
-        
-        return os.getenv(parameter_name.replace('/', '_').upper(), "")
-
-
 # 전역 설정 인스턴스 (서비스별로 초기화)
 config_manager: Optional[ConfigManager] = None
 
