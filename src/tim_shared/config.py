@@ -109,8 +109,6 @@ class ConfigManager:
             service_version=os.getenv("SERVICE_VERSION", "1.0.0-local"),
             log_level=os.getenv("LOG_LEVEL", "DEBUG"),
 
-            sqs_endpoint=os.getenv("SQS_ENDPOINT"),
-            
             database=DatabaseConfig(
                 # 로컬 MySQL (Docker Compose)
                 mysql_host=os.getenv("DB_HOST", "localhost"),
